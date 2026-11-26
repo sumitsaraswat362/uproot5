@@ -180,6 +180,7 @@ in file {self.file.file_path}"""
         self._fields = None
         self._all_fields = None
         self._lookup = None
+        self._attribute_sets = None
 
     @property
     def all_fields(self):
@@ -477,9 +478,9 @@ in file {self.file.file_path}"""
                 self._members["fVersionPatch"],
             )
             f = FooterReader(version).read(self._footer_chunk, cursor, context)
-            assert (
-                f.header_checksum == self.header.checksum
-            ), f"checksum={self.header.checksum}, header_checksum={f.header_checksum}"
+            assert f.header_checksum == self.header.checksum, (
+                f"checksum={self.header.checksum}, header_checksum={f.header_checksum}"
+            )
             self._footer = f
             assert f.checksum == xxhash.xxh3_64_intdigest(
                 self._footer_chunk.raw_data[: -_rntuple_checksum_format.size]
@@ -532,6 +533,54 @@ in file {self.file.file_path}"""
         else:
             decomp_chunk = chunk
         return decomp_chunk, cursor
+
+    def _read_attribute_set(self, record):
+        decomp_chunk, cursor = self.read_locator(
+            record.locator, record.anchor_uncompressed_size
+        )
+        attr_rntuple = Model_ROOT_3a3a_RNTuple.__new__(Model_ROOT_3a3a_RNTuple)
+        attr_rntuple._cursor = cursor.copy()
+        attr_rntuple._file = self._file
+        attr_rntuple._parent = self
+        attr_rntuple._concrete = None
+        attr_rntuple._members = {}
+        attr_rntuple._bases = []
+        attr_rntuple._num_bytes = None
+        attr_rntuple._instance_version = None
+        attr_rntuple._is_memberwise = False
+        attr_rntuple.read_members(decomp_chunk, cursor, {}, self._file)
+        return uproot.behaviors.RNTuple.RNTupleAttributeSet(
+            record.attribute_set_name,
+            (record.schema_version_major, record.schema_version_minor),
+            attr_rntuple,
+            self,
+        )
+
+    @property
+    def attribute_sets(self):
+        """
+        The linked attribute sets of the RNTuple as a mapping from name to
+        :doc:`uproot.behaviors.RNTuple.RNTupleAttributeSet`.
+        """
+        if self._attribute_sets is None:
+            self._attribute_sets = {}
+            if self.footer.linked_attribute_sets is not None:
+                for record in self.footer.linked_attribute_sets:
+                    name = record.attribute_set_name
+                    self._attribute_sets[name] = self._read_attribute_set(record)
+        return self._attribute_sets
+
+    def attribute_set(self, name):
+        """
+        Returns the linked attribute set named ``name``.
+        """
+        if name in self.attribute_sets:
+            return self.attribute_sets[name]
+        available = list(self.attribute_sets.keys())
+        raise KeyError(
+            f"RNTuple {self.name!r} has no attribute set {name!r}. "
+            f"Available attribute sets: {available}"
+        )
 
     @property
     def page_list_envelopes(self):

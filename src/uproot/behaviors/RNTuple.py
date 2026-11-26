@@ -1227,7 +1227,7 @@ class HasFields(Mapping):
                 raise uproot.KeyInFileError(
                     original_where,
                     keys=self.keys(recursive=recursive),
-                    file_path=self.ntuple.parent._file.file_path,
+                    file_path=self.ntuple.file.file_path,
                     object_path=self.path,
                 ) from None
             return this
@@ -1240,7 +1240,7 @@ class HasFields(Mapping):
                 raise uproot.KeyInFileError(
                     original_where,
                     keys=self.keys(recursive=recursive),
-                    file_path=self.ntuple.parent._file.file_path,
+                    file_path=self.ntuple.file.file_path,
                     object_path=self.path,
                 )
 
@@ -1248,7 +1248,7 @@ class HasFields(Mapping):
             raise uproot.KeyInFileError(
                 original_where,
                 keys=self.keys(recursive=recursive),
-                file_path=self.ntuple.parent._file.file_path,
+                file_path=self.ntuple.file.file_path,
                 object_path=self.path,
             )
 
@@ -1392,7 +1392,12 @@ class RNTuple(HasFields):
         """
         Object path of the ``RNTuple``.
         """
-        return self.parent.object_path
+        parent = self.parent
+        if isinstance(parent, uproot.behaviors.RNTuple.RNTuple):
+            return f"{parent.object_path}:{self.name}"
+        if hasattr(parent, "object_path"):
+            return parent.object_path
+        return self.name
 
     @property
     def cache_key(self):
@@ -1400,7 +1405,314 @@ class RNTuple(HasFields):
         String that uniquely specifies this ``RNTuple`` in its path, to use as
         part of object and array cache keys.
         """
-        return f"{self.parent.cache_key}{self.name};{self.parent.fCycle}"
+        cycle = getattr(self.parent, "fCycle", None)
+        cycle_str = f";{cycle}" if cycle is not None else ""
+        parent_key = getattr(self.parent, "cache_key", "")
+        return f"{parent_key}{self.name}{cycle_str}"
+
+    @property
+    def attribute_sets(self):
+        """
+        The linked attribute sets of the RNTuple as a mapping from name to
+        :doc:`uproot.behaviors.RNTuple.RNTupleAttributeSet`.
+        """
+        return self.ntuple.attribute_sets
+
+    def attribute_set(self, name):
+        """
+        Returns the linked attribute set named ``name``.
+        """
+        return self.ntuple.attribute_set(name)
+
+
+class RNTupleAttributeRow(Mapping):
+    """
+    A single row in an RNTuple attribute set corresponding to a validity range.
+    """
+
+    def __init__(self, attribute_set, index, range_tuple):
+        self._attribute_set = attribute_set
+        self._index = index
+        self._range = range_tuple
+
+    @property
+    def index(self):
+        """
+        The entry index of this row within the attribute set.
+        """
+        return self._index
+
+    @property
+    def range(self):
+        """
+        The (start, end) validity interval for this row in the parent RNTuple.
+        """
+        return self._range
+
+    @property
+    def range_start(self):
+        """
+        The starting entry index (inclusive) of this row in the parent RNTuple.
+        """
+        return self._range[0]
+
+    @property
+    def range_end(self):
+        """
+        The ending entry index (exclusive) of this row in the parent RNTuple.
+        """
+        return self._range[1]
+
+    def keys(self):
+        """
+        List of attribute field names available in this row.
+        """
+        return self._attribute_set.keys()
+
+    def __getitem__(self, name):
+        field = self._attribute_set[name]
+        arr = field.array(entry_start=self._index, entry_stop=self._index + 1)
+        val = arr[0]
+        if hasattr(val, "to_list"):
+            return val.to_list()
+        return val
+
+    def __iter__(self):
+        yield from self.keys()
+
+    def __len__(self):
+        return len(self.keys())
+
+    def __contains__(self, key):
+        return key in self.keys()
+
+    def to_dict(self):
+        """
+        Returns a dictionary mapping attribute names to their values for this row.
+        """
+        out = {}
+        for k in self.keys():
+            val = self[k]
+            if hasattr(val, "to_list"):
+                out[k] = val.to_list()
+            else:
+                out[k] = val
+        return out
+
+    def __repr__(self):
+        return (
+            f"<RNTupleAttributeRow {self._attribute_set.name!r} "
+            f"[{self.range_start}, {self.range_end}) entry={self._index} "
+            f"{self.to_dict()!r}>"
+        )
+
+
+class RNTupleAttributeSet(Mapping):
+    """
+    Representation of an RNTuple linked attribute set.
+
+    In ROOT RNTuple, an attribute set is a dataset stored alongside the main
+    RNTuple containing validity intervals and metadata fields.
+
+    Args:
+        name (str): The name of the attribute set.
+        schema_version (tuple of int): The (major, minor) version of the attribute set schema.
+        ntuple (Model_ROOT_3a3a_RNTuple): The underlying RNTuple model representing the attribute set.
+        parent (RNTuple): The parent RNTuple to which this attribute set is linked.
+    """
+
+    def __init__(self, name, schema_version, ntuple, parent):
+        self._name = name
+        self._schema_version = schema_version
+        self._ntuple = ntuple
+        self._parent = parent
+        self._cached_ranges = None
+
+    @property
+    def name(self):
+        """
+        Name of the attribute set.
+        """
+        return self._name
+
+    @property
+    def schema_version(self):
+        """
+        Tuple of (major, minor) schema version of the attribute set.
+        """
+        return self._schema_version
+
+    @property
+    def ntuple(self):
+        """
+        The underlying RNTuple model representing the attribute set.
+        """
+        return self._ntuple
+
+    @property
+    def parent(self):
+        """
+        The parent RNTuple to which this attribute set is linked.
+        """
+        return self._parent
+
+    @property
+    def num_entries(self):
+        """
+        The number of entries (rows) in the attribute set.
+        """
+        return self._ntuple.num_entries
+
+    def __len__(self):
+        return len(self.keys())
+
+    def __iter__(self):
+        yield from self.keys()
+
+    def __contains__(self, key):
+        return key in self.keys() or key in self._ntuple
+
+    @property
+    def _user_data_field(self):
+        if "_userData" in self._ntuple.keys():
+            return self._ntuple["_userData"]
+        return None
+
+    def keys(self):
+        """
+        Returns the attribute names in this attribute set.
+        """
+        user_data = self._user_data_field
+        if user_data is not None:
+            return list(user_data.keys())
+        return [k for k in self._ntuple.keys() if not k.startswith("_")]
+
+    def __getitem__(self, name):
+        user_data = self._user_data_field
+        if user_data is not None and name in user_data:
+            return user_data[name]
+        if name in self._ntuple:
+            return self._ntuple[name]
+        available = list(self.keys())
+        raise KeyError(
+            f"Attribute {name!r} not found in attribute set {self._name!r}. "
+            f"Available attributes: {available}"
+        )
+
+    @property
+    def range_start(self):
+        """
+        Starting entry indices in the parent RNTuple for each attribute row.
+        """
+        if "_rangeStart" in self._ntuple:
+            return self._ntuple["_rangeStart"].array(library="np")
+        return numpy.empty(0, dtype=numpy.uint64)
+
+    @property
+    def range_len(self):
+        """
+        Number of entries in the parent RNTuple spanned by each attribute row.
+        """
+        if "_rangeLen" in self._ntuple:
+            return self._ntuple["_rangeLen"].array(library="np")
+        return numpy.empty(0, dtype=numpy.uint64)
+
+    @property
+    def range_end(self):
+        """
+        Ending entry indices (half-open, range_start + range_len) in the parent RNTuple.
+        """
+        return self.range_start + self.range_len
+
+    @property
+    def ranges(self):
+        """
+        List of (start, end) tuples for the validity intervals of all rows.
+        """
+        if self._cached_ranges is None:
+            starts = self.range_start
+            lens = self.range_len
+            self._cached_ranges = [
+                (int(s), int(s + length))
+                for s, length in zip(starts, lens, strict=True)
+            ]
+        return self._cached_ranges
+
+    def locate_range(self, entry_index):
+        """
+        Finds the attribute row index whose validity range covers entry_index.
+
+        Returns the integer row index, or None if entry_index is not covered.
+        """
+        if entry_index < 0:
+            return None
+        starts = self.range_start
+        ends = self.range_end
+        mask = (starts <= entry_index) & (entry_index < ends)
+        matches = numpy.nonzero(mask)[0]
+        if len(matches) == 0:
+            return None
+        return int(matches[0])
+
+    def for_entry(self, entry_index, default=None):
+        """
+        Returns an RNTupleAttributeRow covering entry_index, or default if entry_index is not covered.
+        """
+        idx = self.locate_range(entry_index)
+        if idx is None:
+            return default
+        return RNTupleAttributeRow(self, idx, self.ranges[idx])
+
+    def arrays(self, *args, **kwargs):
+        """
+        Extracts attribute data as arrays. If user data fields exist, reads from
+        the user data record; otherwise reads from the attribute set RNTuple.
+        """
+        user_data = self._user_data_field
+        if user_data is not None:
+            expressions = kwargs.get("expressions")
+            if len(args) > 0:
+                expressions = args[0]
+            if expressions is None:
+                out = user_data.arrays(*args, **kwargs)
+                if (
+                    hasattr(out, "fields")
+                    and user_data.name in out.fields
+                    and len(out.fields) == 1
+                ):
+                    return out[user_data.name]
+                return out
+            if isinstance(expressions, str):
+                expr_list = [expressions]
+            elif isinstance(expressions, (list, tuple)):
+                expr_list = list(expressions)
+            else:
+                expr_list = []
+            if all(e in user_data for e in expr_list):
+                out = user_data.arrays(*args, **kwargs)
+                if (
+                    hasattr(out, "fields")
+                    and user_data.name in out.fields
+                    and len(out.fields) == 1
+                ):
+                    return out[user_data.name]
+                return out
+        return self._ntuple.arrays(*args, **kwargs)
+
+    def show(self, *args, **kwargs):
+        """
+        Prints the attribute set schema and summary of validity ranges.
+        """
+        user_data = self._user_data_field
+        target = user_data if user_data is not None else self._ntuple
+        return target.show(*args, **kwargs)
+
+    def __repr__(self):
+        return (
+            f"<RNTupleAttributeSet {self._name!r} "
+            f"({len(self)} attributes, {self.num_entries} entries) "
+            f"at 0x{id(self):012x}>"
+        )
 
 
 def _filter_name_deep(filter_name, hasfields, field):

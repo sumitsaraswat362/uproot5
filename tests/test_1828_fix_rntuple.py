@@ -592,6 +592,34 @@ def test_linked_attribute_set_written_by_root(root, tmp_path):
         assert [record.attribute_set_name for record in linked] == ["my_attributes"]
         assert ntuple.arrays().x.to_list() == [0, 1, 2, 3]
 
+        assert "my_attributes" in ntuple.attribute_sets
+        attr = ntuple.attribute_set("my_attributes")
+        assert attr.name == "my_attributes"
+        assert attr.schema_version == (1, 0)
+        assert attr.num_entries == 1
+        assert list(attr.keys()) == ["note"]
+        assert "note" in attr
+        assert attr["note"].array().to_list() == ["a note"]
+        assert attr.ranges == [(0, 4)]
+        assert attr.range_start.tolist() == [0]
+        assert attr.range_len.tolist() == [4]
+        assert attr.range_end.tolist() == [4]
+        assert attr.locate_range(0) == 0
+        assert attr.locate_range(3) == 0
+        assert attr.locate_range(4) is None
+        assert attr.locate_range(-1) is None
+        row = attr.for_entry(2)
+        assert row is not None
+        assert row.index == 0
+        assert row.range == (0, 4)
+        assert row.range_start == 0
+        assert row.range_end == 4
+        assert row["note"] == "a note"
+        assert row.to_dict() == {"note": "a note"}
+        assert attr.for_entry(4) is None
+        assert attr.for_entry(4, default="missing") == "missing"
+        assert attr.arrays().note.to_list() == ["a note"]
+
 
 @pytest.mark.parametrize(
     ("data", "expected"),
